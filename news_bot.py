@@ -1,5 +1,5 @@
-# 版本：v13.0 (雲端專用版：移除本機排程，改讀取環境變數密碼)
-import os          # 用來讀取雲端保險箱密碼的套件
+# 版本：v13.1 (雲端專用版：加入智慧替補機制，確保國際新聞湊滿10則)
+import os          
 import feedparser  
 import time        
 import smtplib     
@@ -8,7 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from google import genai 
 
 # =====================================================================
-# ☁️ 雲端設定區：改為從 GitHub Secrets (保險箱) 讀取，程式碼不再暴露密碼！
+# ☁️ 雲端設定區：從 GitHub Secrets 讀取密碼
 # =====================================================================
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
@@ -19,7 +19,6 @@ RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
 client = genai.Client(api_key=API_KEY) 
 
 def fetch_international_news():  
-    news_list = []
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC"),
         ("https://moxie.foxnews.com/google-publisher/world.xml", "Fox News"),
@@ -27,12 +26,37 @@ def fetch_international_news():
         ("https://feeds.a.dj.com/rss/RSSWorldNews.xml", "華爾街日報 (WSJ)"),
         ("http://feeds.reuters.com/reuters/worldNews", "路透社 (Reuters)")
     ]
+    
+    all_source_entries = []
+    # 步驟 1：先向各家媒體抓取多一點的備用新聞 (最多取前5名)
     for url, source_name in rss_sources:
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:2]:
-            entry.custom_source = source_name 
-            news_list.append(entry)
-    return news_list
+        try:
+            feed = feedparser.parse(url)
+            valid_entries = []
+            for entry in feed.entries[:5]:
+                entry.custom_source = source_name 
+                valid_entries.append(entry)
+            if valid_entries:
+                all_source_entries.append(valid_entries)
+        except Exception:
+            pass # 如果某家媒體阻擋抓取，就直接跳過，不影響其他家
+
+    # 步驟 2：像發撲克牌一樣輪流抽取，確保來源多元，直到湊滿 10 則
+    final_list = []
+    round_idx = 0
+    while len(final_list) < 10:
+        added_in_this_round = False
+        for entries in all_source_entries:
+            if round_idx < len(entries):
+                final_list.append(entries[round_idx])
+                added_in_this_round = True
+                if len(final_list) == 10:
+                    break
+        if not added_in_this_round: # 如果全部備用新聞都抽完了還是不滿10則，就提早結束
+            break
+        round_idx += 1
+            
+    return final_list
 
 def fetch_domestic_news():  
     news_list = []
