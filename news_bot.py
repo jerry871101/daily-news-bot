@@ -1,29 +1,28 @@
-# 版本：v16.0 (新增日夜雙模式：自動切換早晚報、明日天氣預報、12小時過濾防重複)
+# 版本：v17.0 (SaaS升級版：獨立客製化天氣預報、AI資料預處理優化效能)
 import os          
 import feedparser  
 import time
-import datetime    # 新增：讓機器人具備時間觀念
-from calendar import timegm # 新增：用來計算新聞發布經過了幾小時
+import datetime    
+from calendar import timegm 
 import smtplib
 import requests    
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
 from google import genai 
 
-# 偽裝成一般 Chrome 瀏覽器
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
+RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "") # 讀取包含逗號的信箱字串
 
 client = genai.Client(api_key=API_KEY) 
 
-def get_tamsui_weather(is_evening): 
-    # 根據日夜模式，決定要抓取「今日」還是「明日」的天氣
+# 💎 優化：將天氣函式改成可以接收不同座標與地名
+def get_custom_weather(lat, lon, loc_name, is_evening): 
     try:
-        url = "https://api.open-meteo.com/v1/forecast?latitude=25.1706&longitude=121.4398&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
         response = requests.get(url, timeout=10)
         data = response.json()
         
@@ -34,20 +33,18 @@ def get_tamsui_weather(is_evening):
         }
 
         if is_evening:
-            # 晚報：抓取「明日」(陣列索引 1) 的氣溫與降雨
             max_t = data['daily']['temperature_2m_max'][1]
             min_t = data['daily']['temperature_2m_min'][1]
             rain_chance = data['daily']['precipitation_probability_max'][1]
             condition = weather_desc.get(data['daily']['weathercode'][1], '☁️ 未知')
-            return f"🌙 【明日淡水區預報】 🌡️ 氣溫：{min_t}~{max_t}°C &nbsp;|&nbsp; {condition} &nbsp;|&nbsp; ☔ 降雨機率：{rain_chance}%"
+            return f"🌙 【明日{loc_name}預報】 🌡️ 氣溫：{min_t}~{max_t}°C &nbsp;|&nbsp; {condition} &nbsp;|&nbsp; ☔ 降雨機率：{rain_chance}%"
         else:
-            # 早報：抓取「今日」(陣列索引 0) 的氣溫與降雨
             current_temp = data['current_weather']['temperature']
             rain_chance = data['daily']['precipitation_probability_max'][0]
             condition = weather_desc.get(data['current_weather']['weathercode'], '☁️ 未知')
-            return f"☀️ 【今日淡水區預報】 🌡️ 氣溫：{current_temp}°C &nbsp;|&nbsp; {condition} &nbsp;|&nbsp; ☔ 降雨機率：{rain_chance}%"
+            return f"☀️ 【今日{loc_name}預報】 🌡️ 氣溫：{current_temp}°C &nbsp;|&nbsp; {condition} &nbsp;|&nbsp; ☔ 降雨機率：{rain_chance}%"
     except Exception as e:
-        return "⚠️ 暫時無法取得天氣資訊"
+        return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
 def fetch_international_news(is_evening):
     rss_sources = [
@@ -59,7 +56,6 @@ def fetch_international_news(is_evening):
     ]
     all_source_entries = []
     current_time = time.time()
-    # 💎 晚報只看過去 12 小時的新聞，早報看 24 小時
     limit_hours = 12 if is_evening else 24 
 
     for url, source_name in rss_sources:
@@ -67,16 +63,14 @@ def fetch_international_news(is_evening):
             feed = feedparser.parse(url)
             valid_entries = []
             for entry in feed.entries:
-                # 檢查新聞是否太舊
                 published_tuple = getattr(entry, 'published_parsed', None)
                 if published_tuple:
                     entry_time = timegm(published_tuple)
                     if (current_time - entry_time) > (limit_hours * 3600):
-                        continue # 超過時效，跳過不採用 (防止早晚報重複)
-                
+                        continue 
                 entry.custom_source = source_name 
                 valid_entries.append(entry)
-                if len(valid_entries) >= 5: # 每家最多取5篇備用
+                if len(valid_entries) >= 5: 
                     break
             if valid_entries:
                 all_source_entries.append(valid_entries)
@@ -100,9 +94,7 @@ def fetch_international_news(is_evening):
 
 def fetch_domestic_news(is_evening):
     news_list = []
-    # 💎 晚報只搜尋 12h 內的新聞，早報搜尋 24h 內
     time_param = "12h" if is_evening else "24h"
-
     google_tech_url = f"https://news.google.com/rss/search?q=科技產業+when:{time_param}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     tech_feed = feedparser.parse(google_tech_url)
     for entry in tech_feed.entries[:3]:
@@ -133,7 +125,7 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
 
     請完成：
     1. 將標題翻譯成流暢的「繁體中文」。
-    2. 寫出 150~300 字的重點摘要。若有列點說明，請明確換行分段。請勿使用 Markdown 語法（例如 ** 或 #）。
+    2. 寫出 150~300 字的重點摘要。若有列點說明，請明確換行分段。請勿使用 Markdown 語法。
     """
     car_special_prompt = """
     3. 特別指令：請務必掃描內文，並在摘要的最後，特別標示出是否有提及「通風座椅」等內裝配備資訊。
@@ -160,7 +152,23 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
     except Exception:
         return news_title, "無法生成摘要，請檢查 API 狀態或網路連線。"
 
-def build_html_email(weather_info, intl_news, domestic_news, car_news, edition_name): 
+# 💎 新增：預先讓 AI 處理好所有新聞，並存成字典清單
+def prepare_news_summaries(news_list, news_type="general"):
+    summarized_list = []
+    for news in news_list:
+        content_summary = news.get('summary', '無提供內文簡介')
+        zh_title, ai_analysis = process_news_with_api(news.title, content_summary, news_type)
+        summarized_list.append({
+            'title': zh_title,
+            'analysis': ai_analysis.replace('\n', '<br>'),
+            'source': news.custom_source,
+            'link': news.link
+        })
+        time.sleep(3) # 避免呼叫 API 過快
+    return summarized_list
+
+# 💎 調整：HTML 組裝現在直接吃已經處理好的「摘要清單」
+def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summaries, edition_name): 
     html_content = f"""
     <html>
     <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: auto;">
@@ -172,70 +180,58 @@ def build_html_email(weather_info, intl_news, domestic_news, car_news, edition_n
         <h2 style="color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 10px;">【每日焦點新聞分析 - {edition_name}】</h2>
         <h3 style="color: #8e44ad;">🚗 汽車產業動態 (新車 / 改款 / 上市資訊)</h3>
     """
-    for i, news in enumerate(car_news, 1):
-        content_summary = news.get('summary', '無提供內文簡介')
-        zh_title, ai_analysis = process_news_with_api(news.title, content_summary, news_type="car")
-        formatted_analysis = ai_analysis.replace('\n', '<br>')
+    for i, news in enumerate(car_summaries, 1):
         html_content += f"""
         <div style="margin-bottom: 25px;">
-            <h4 style="margin: 0 0 5px 0; color: #9b59b6; font-size: 18px;">{i}. {zh_title}</h4>
-            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news.custom_source}</div>
+            <h4 style="margin: 0 0 5px 0; color: #9b59b6; font-size: 18px;">{i}. {news['title']}</h4>
+            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news['source']}</div>
             <div style="background-color: #f8f9fa; padding: 15px; border-left: 5px solid #9b59b6; border-radius: 5px; margin-bottom: 10px;">
-                <strong>💡 AI 分析：</strong><br>{formatted_analysis}
+                <strong>💡 AI 分析：</strong><br>{news['analysis']}
             </div>
-            <a href="{news.link}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
+            <a href="{news['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
         </div>
         """
-        time.sleep(3)
 
     html_content += """
         <hr style="border: 0; border-top: 1px solid #eee; margin: 30px 0;">
         <h3 style="color: #2980b9;">🌍 國際熱門頭條新聞 (WSJ/路透/BBC/Fox/CNBC 焦點)</h3>
     """
-    for i, news in enumerate(intl_news, 1):
-        content_summary = news.get('summary', '無提供內文簡介')
-        zh_title, ai_analysis = process_news_with_api(news.title, content_summary)
-        formatted_analysis = ai_analysis.replace('\n', '<br>')
+    for i, news in enumerate(intl_summaries, 1):
         html_content += f"""
         <div style="margin-bottom: 25px;">
-            <h4 style="margin: 0 0 5px 0; color: #1abc9c; font-size: 18px;">{i}. {zh_title}</h4>
-            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news.custom_source}</div>
+            <h4 style="margin: 0 0 5px 0; color: #1abc9c; font-size: 18px;">{i}. {news['title']}</h4>
+            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news['source']}</div>
             <div style="background-color: #f8f9fa; padding: 15px; border-left: 5px solid #1abc9c; border-radius: 5px; margin-bottom: 10px;">
-                <strong>💡 AI 分析：</strong><br>{formatted_analysis}
+                <strong>💡 AI 分析：</strong><br>{news['analysis']}
             </div>
-            <a href="{news.link}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
+            <a href="{news['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
         </div>
         """
-        time.sleep(3) 
         
     html_content += """
         <hr style="border: 0; border-top: 1px solid #eee; margin: 30px 0;">
         <h3 style="color: #e67e22;">🏠 國內熱門新聞 (科技與特定財經)</h3>
     """
-    for i, news in enumerate(domestic_news, 1):
-        content_summary = news.get('summary', '無提供內文簡介')
-        zh_title, ai_analysis = process_news_with_api(news.title, content_summary)
-        formatted_analysis = ai_analysis.replace('\n', '<br>')
+    for i, news in enumerate(domestic_summaries, 1):
         html_content += f"""
         <div style="margin-bottom: 25px;">
-            <h4 style="margin: 0 0 5px 0; color: #f39c12; font-size: 18px;">{i}. {zh_title}</h4>
-            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news.custom_source}</div>
+            <h4 style="margin: 0 0 5px 0; color: #f39c12; font-size: 18px;">{i}. {news['title']}</h4>
+            <div style="color: #7f8c8d; font-size: 13px; margin-bottom: 8px;">📰 資料來源：{news['source']}</div>
             <div style="background-color: #f8f9fa; padding: 15px; border-left: 5px solid #f39c12; border-radius: 5px; margin-bottom: 10px;">
-                <strong>💡 AI 分析：</strong><br>{formatted_analysis}
+                <strong>💡 AI 分析：</strong><br>{news['analysis']}
             </div>
-            <a href="{news.link}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
+            <a href="{news['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">🔗 點此閱讀原文</a>
         </div>
         """
-        time.sleep(3)
 
     html_content += "</body></html>"
     return html_content
 
-def send_email_job(html_content, edition_name, now_tw): 
+# 💎 調整：接收 target_email 參數，實現獨立發送
+def send_email_job(html_content, edition_name, now_tw, target_email): 
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
-    msg['To'] = RECEIVER_EMAIL
-    # 💎 信件標題會自動標示是早報還是晚報
+    msg['To'] = target_email
     msg['Subject'] = f"📰 您的專屬每日頭條分析 - {edition_name} ({now_tw.strftime('%Y-%m-%d')})"
     msg.attach(MIMEText(html_content, 'html', 'utf-8'))
     try:
@@ -244,27 +240,47 @@ def send_email_job(html_content, edition_name, now_tw):
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        print(f"[{time.strftime('%H:%M:%S')}] ✅ Email {edition_name} 寄送成功！")
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ Email 成功寄送至 {target_email}！")
     except Exception as e:
-        print(f"[{time.strftime('%H:%M:%S')}] ❌ Email 寄送失敗，錯誤訊息：{e}")
+        print(f"[{time.strftime('%H:%M:%S')}] ❌ Email 寄送失敗 ({target_email})，錯誤訊息：{e}")
 
 def daily_news_routine():
-    # 取得台灣時間 (UTC+8)
     tw_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tw_tz)
-    
-    # 判斷是否為晚上 (超過中午 12 點即視為晚報模式)
     is_evening = now_tw.hour >= 12
     edition_name = "晚報" if is_evening else "早報"
-    print(f"啟動 {edition_name} 模式，開始抓取新聞與天氣...")
     
-    weather_info = get_tamsui_weather(is_evening)
+    # 1. 拆解 GitHub 保險箱裡的信箱字串
+    email_list = [email.strip() for email in RECEIVER_EMAILS_STR.split(",") if email.strip()]
+    
+    # 2. 建立訂閱者名單與對應座標 (經緯度精準定位)
+    subscribers = []
+    if len(email_list) >= 1:
+        # 第一個信箱配淡水區 (Lat: 25.1706, Lon: 121.4398)
+        subscribers.append({"email": email_list[0], "loc_name": "淡水區", "lat": 25.1706, "lon": 121.4398})
+    if len(email_list) >= 2:
+        # 第二個信箱配新竹新豐鄉 (Lat: 24.8988, Lon: 120.9818)
+        subscribers.append({"email": email_list[1], "loc_name": "新豐鄉", "lat": 24.8988, "lon": 120.9818})
+
+    print(f"啟動 {edition_name} 模式，準備寄送給 {len(subscribers)} 位訂閱者...")
+    
+    # 3. 統一抓取與 AI 處理新聞 (大家共用同一份精華，省時省額度)
+    print("正在由 AI 統一處理新聞摘要，請稍候...")
     intl_news = fetch_international_news(is_evening)
-    domestic_news = fetch_domestic_news(is_evening)
-    car_news = fetch_car_news(is_evening)
+    intl_summaries = prepare_news_summaries(intl_news, "general")
     
-    final_html = build_html_email(weather_info, intl_news, domestic_news, car_news, edition_name)
-    send_email_job(final_html, edition_name, now_tw)
+    domestic_news = fetch_domestic_news(is_evening)
+    domestic_summaries = prepare_news_summaries(domestic_news, "general")
+    
+    car_news = fetch_car_news(is_evening)
+    car_summaries = prepare_news_summaries(car_news, "car")
+    
+    # 4. 針對每位訂閱者，客製化天氣並寄出
+    for sub in subscribers:
+        print(f"正在為 {sub['email']} 組合專屬 {sub['loc_name']} 天氣資訊...")
+        weather_info = get_custom_weather(sub['lat'], sub['lon'], sub['loc_name'], is_evening)
+        final_html = build_html_email(weather_info, intl_summaries, domestic_summaries, car_summaries, edition_name)
+        send_email_job(final_html, edition_name, now_tw, sub['email'])
 
 if __name__ == "__main__":
     daily_news_routine()
