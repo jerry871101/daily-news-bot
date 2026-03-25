@@ -1,4 +1,4 @@
-# 版本：v17.1 (效能微調：將 API 請求間隔延長至 5 秒，完美迴避免費版 15 RPM 限制)
+# 版本：v18.0 (防彈裝甲版：解除 AI 新聞安全限制 + 失敗自動重試機制)
 import os          
 import feedparser  
 import time
@@ -9,6 +9,7 @@ import requests
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
 from google import genai 
+from google.genai import types # 🛡️ 新增：用來設定 AI 的安全防護等級
 
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -139,17 +140,38 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
     else:
         final_prompt = base_prompt + format_prompt
 
-    try:
-        response = client.models.generate_content(model='gemini-2.5-flash', contents=final_prompt)
-        result = response.text.strip()
-        if '|||' in result:
-            zh_title, summary = result.split('|||', 1)
-        else:
-            zh_title = news_title 
-            summary = result
-        return zh_title.strip(), summary.strip()
-    except Exception:
-        return news_title, "無法生成摘要，請檢查 API 狀態或網路連線。"
+    # 🛡️ 升級：加入 2 次重試機制與解除安全封印
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash', 
+                contents=final_prompt,
+                # 告訴 AI：這是新聞，請關閉所有過度敏感的阻擋機制
+                config=types.GenerateContentConfig(
+                    safety_settings=[
+                        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                        types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                    ]
+                )
+            )
+            result = response.text.strip()
+            if '|||' in result:
+                zh_title, summary = result.split('|||', 1)
+            else:
+                zh_title = news_title 
+                summary = result
+            return zh_title.strip(), summary.strip()
+            
+        except Exception as e:
+            if attempt == 0:
+                print(f"⚠️ 處理 {news_title[:10]}... 失敗，等待 10 秒後重試...")
+                time.sleep(10) # 第一次失敗，深呼吸等 10 秒再試一次
+            else:
+                # 真的不行了，把真實的錯誤原因印出來，方便抓蟲
+                error_msg = str(e)[:50] 
+                return news_title, f"⚠️ 無法生成摘要 (已重試失敗)。系統除錯資訊：{error_msg}..."
 
 def prepare_news_summaries(news_list, news_type="general"):
     summarized_list = []
@@ -162,8 +184,6 @@ def prepare_news_summaries(news_list, news_type="general"):
             'source': news.custom_source,
             'link': news.link
         })
-        # 💎 關鍵修正：將休息時間從 3 秒拉長到 5 秒！
-        # 這樣 18 篇新聞處理完大約需要 1 分半鐘，就能輕鬆避開 1 分鐘 15 次的速限。
         time.sleep(5) 
     return summarized_list
 
