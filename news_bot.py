@@ -1,4 +1,4 @@
-# 版本：v18.0 (防彈裝甲版：解除 AI 新聞安全限制 + 失敗自動重試機制)
+# 版本：v19.0 (終極穩定版：大幅延長間隔時間至20秒，並加入429智慧避讓機制，徹底解決資源耗盡問題)
 import os          
 import feedparser  
 import time
@@ -9,7 +9,7 @@ import requests
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
 from google import genai 
-from google.genai import types # 🛡️ 新增：用來設定 AI 的安全防護等級
+from google.genai import types 
 
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -20,7 +20,7 @@ RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "")
 
 client = genai.Client(api_key=API_KEY) 
 
-def get_custom_weather(lat, lon, loc_name, is_evening): 
+def get_custom_weather(lat, lon, loc_name, is_evening): # 取得指定經緯度的天氣資訊
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
         response = requests.get(url, timeout=10)
@@ -46,7 +46,7 @@ def get_custom_weather(lat, lon, loc_name, is_evening):
     except Exception as e:
         return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
-def fetch_international_news(is_evening):
+def fetch_international_news(is_evening): # 抓取國際新聞並過濾重複時效
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC"),
         ("https://moxie.foxnews.com/google-publisher/world.xml", "Fox News"),
@@ -92,7 +92,7 @@ def fetch_international_news(is_evening):
         round_idx += 1
     return final_list
 
-def fetch_domestic_news(is_evening):
+def fetch_domestic_news(is_evening): # 抓取國內科技與特定財經新聞
     news_list = []
     time_param = "12h" if is_evening else "24h"
     google_tech_url = f"https://news.google.com/rss/search?q=科技產業+when:{time_param}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -108,7 +108,7 @@ def fetch_domestic_news(is_evening):
         news_list.append(entry)
     return news_list
 
-def fetch_car_news(is_evening):
+def fetch_car_news(is_evening): # 抓取最新汽車動態
     news_list = []
     time_param = "12h" if is_evening else "24h"
     google_car_url = f"https://news.google.com/rss/search?q=新車+改款+上市+when:{time_param}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -118,7 +118,7 @@ def fetch_car_news(is_evening):
         news_list.append(entry)
     return news_list
 
-def process_news_with_api(news_title, news_summary, news_type="general"): 
+def process_news_with_api(news_title, news_summary, news_type="general"): # 呼叫 AI 生成摘要，包含智慧避讓機制
     base_prompt = f"""請以專業分析師的角度分析以下新聞：
     新聞標題：{news_title}
     新聞簡介：{news_summary}
@@ -140,13 +140,12 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
     else:
         final_prompt = base_prompt + format_prompt
 
-    # 🛡️ 升級：加入 2 次重試機制與解除安全封印
-    for attempt in range(2):
+    # 🛡️ 終極穩定機制：最多嘗試 3 次，遇到 429 直接休息 60 秒
+    for attempt in range(3):
         try:
             response = client.models.generate_content(
                 model='gemini-2.5-flash', 
                 contents=final_prompt,
-                # 告訴 AI：這是新聞，請關閉所有過度敏感的阻擋機制
                 config=types.GenerateContentConfig(
                     safety_settings=[
                         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
@@ -165,15 +164,18 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
             return zh_title.strip(), summary.strip()
             
         except Exception as e:
-            if attempt == 0:
-                print(f"⚠️ 處理 {news_title[:10]}... 失敗，等待 10 秒後重試...")
-                time.sleep(10) # 第一次失敗，深呼吸等 10 秒再試一次
+            error_str = str(e)
+            if attempt < 2:
+                if '429' in error_str:
+                    print(f"⏳ 遭遇 API 流量限制 (429)，機器人強迫休眠 60 秒後再試...")
+                    time.sleep(60) # 遇到 429 乖乖等一分鐘，讓額度恢復
+                else:
+                    print(f"⚠️ 發生錯誤，等待 15 秒後進行第 {attempt+2} 次重試...")
+                    time.sleep(15)
             else:
-                # 真的不行了，把真實的錯誤原因印出來，方便抓蟲
-                error_msg = str(e)[:50] 
-                return news_title, f"⚠️ 無法生成摘要 (已重試失敗)。系統除錯資訊：{error_msg}..."
+                return news_title, f"⚠️ 無法生成摘要 (已重試失敗)。系統除錯資訊：{error_str[:50]}..."
 
-def prepare_news_summaries(news_list, news_type="general"):
+def prepare_news_summaries(news_list, news_type="general"): # 將新聞丟給 AI 處理，並控制整體節奏
     summarized_list = []
     for news in news_list:
         content_summary = news.get('summary', '無提供內文簡介')
@@ -184,10 +186,11 @@ def prepare_news_summaries(news_list, news_type="general"):
             'source': news.custom_source,
             'link': news.link
         })
-        time.sleep(5) 
+        # 💎 終極解法：每處理完一篇，讓機器人徹底休息 20 秒
+        time.sleep(20) 
     return summarized_list
 
-def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summaries, edition_name): 
+def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summaries, edition_name): # 組合最終電子報排版
     html_content = f"""
     <html>
     <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: auto;">
@@ -246,7 +249,7 @@ def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summa
     html_content += "</body></html>"
     return html_content
 
-def send_email_job(html_content, edition_name, now_tw, target_email): 
+def send_email_job(html_content, edition_name, now_tw, target_email): # 將信件寄送給個別訂閱者
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
     msg['To'] = target_email
@@ -262,7 +265,7 @@ def send_email_job(html_content, edition_name, now_tw, target_email):
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ❌ Email 寄送失敗 ({target_email})，錯誤訊息：{e}")
 
-def daily_news_routine():
+def daily_news_routine(): # 每日自動化排程主程式
     tw_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tw_tz)
     is_evening = now_tw.hour >= 12
