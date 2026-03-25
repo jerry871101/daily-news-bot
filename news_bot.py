@@ -1,4 +1,4 @@
-# 版本：v17.0 (SaaS升級版：獨立客製化天氣預報、AI資料預處理優化效能)
+# 版本：v17.1 (效能微調：將 API 請求間隔延長至 5 秒，完美迴避免費版 15 RPM 限制)
 import os          
 import feedparser  
 import time
@@ -15,11 +15,10 @@ feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
-RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "") # 讀取包含逗號的信箱字串
+RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "") 
 
 client = genai.Client(api_key=API_KEY) 
 
-# 💎 優化：將天氣函式改成可以接收不同座標與地名
 def get_custom_weather(lat, lon, loc_name, is_evening): 
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
@@ -152,7 +151,6 @@ def process_news_with_api(news_title, news_summary, news_type="general"):
     except Exception:
         return news_title, "無法生成摘要，請檢查 API 狀態或網路連線。"
 
-# 💎 新增：預先讓 AI 處理好所有新聞，並存成字典清單
 def prepare_news_summaries(news_list, news_type="general"):
     summarized_list = []
     for news in news_list:
@@ -164,10 +162,11 @@ def prepare_news_summaries(news_list, news_type="general"):
             'source': news.custom_source,
             'link': news.link
         })
-        time.sleep(3) # 避免呼叫 API 過快
+        # 💎 關鍵修正：將休息時間從 3 秒拉長到 5 秒！
+        # 這樣 18 篇新聞處理完大約需要 1 分半鐘，就能輕鬆避開 1 分鐘 15 次的速限。
+        time.sleep(5) 
     return summarized_list
 
-# 💎 調整：HTML 組裝現在直接吃已經處理好的「摘要清單」
 def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summaries, edition_name): 
     html_content = f"""
     <html>
@@ -227,7 +226,6 @@ def build_html_email(weather_info, intl_summaries, domestic_summaries, car_summa
     html_content += "</body></html>"
     return html_content
 
-# 💎 調整：接收 target_email 參數，實現獨立發送
 def send_email_job(html_content, edition_name, now_tw, target_email): 
     msg = MIMEMultipart()
     msg['From'] = SENDER_EMAIL
@@ -250,21 +248,16 @@ def daily_news_routine():
     is_evening = now_tw.hour >= 12
     edition_name = "晚報" if is_evening else "早報"
     
-    # 1. 拆解 GitHub 保險箱裡的信箱字串
     email_list = [email.strip() for email in RECEIVER_EMAILS_STR.split(",") if email.strip()]
     
-    # 2. 建立訂閱者名單與對應座標 (經緯度精準定位)
     subscribers = []
     if len(email_list) >= 1:
-        # 第一個信箱配淡水區 (Lat: 25.1706, Lon: 121.4398)
         subscribers.append({"email": email_list[0], "loc_name": "淡水區", "lat": 25.1706, "lon": 121.4398})
     if len(email_list) >= 2:
-        # 第二個信箱配新竹新豐鄉 (Lat: 24.8988, Lon: 120.9818)
         subscribers.append({"email": email_list[1], "loc_name": "新豐鄉", "lat": 24.8988, "lon": 120.9818})
 
     print(f"啟動 {edition_name} 模式，準備寄送給 {len(subscribers)} 位訂閱者...")
     
-    # 3. 統一抓取與 AI 處理新聞 (大家共用同一份精華，省時省額度)
     print("正在由 AI 統一處理新聞摘要，請稍候...")
     intl_news = fetch_international_news(is_evening)
     intl_summaries = prepare_news_summaries(intl_news, "general")
@@ -275,7 +268,6 @@ def daily_news_routine():
     car_news = fetch_car_news(is_evening)
     car_summaries = prepare_news_summaries(car_news, "car")
     
-    # 4. 針對每位訂閱者，客製化天氣並寄出
     for sub in subscribers:
         print(f"正在為 {sub['email']} 組合專屬 {sub['loc_name']} 天氣資訊...")
         weather_info = get_custom_weather(sub['lat'], sub['lon'], sub['loc_name'], is_evening)
