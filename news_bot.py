@@ -1,4 +1,4 @@
-# 版本：v23.0 (語法修正版：解決 GitHub 舊版 Python f-string 反斜線報錯問題)
+# 版本：v24.0 (終極穩定版：修正 404 模型名稱找不到的問題，改用最普及的 gemini-1.5-flash)
 import os          
 import feedparser  
 import time
@@ -49,7 +49,6 @@ def get_custom_weather(lat, lon, loc_name, is_evening):
         return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
 def fetch_top_international_news():
-    """精準抓取指定的五大國際外媒 (調整為 8 篇)"""
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC News"),
         ("http://feeds.reuters.com/reuters/worldNews", "路透社 (Reuters)"),
@@ -57,7 +56,6 @@ def fetch_top_international_news():
         ("https://moxie.foxnews.com/google-publisher/world.xml", "Fox News"),
         ("https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100727362", "CNBC")
     ]
-    
     all_news = []
     current_time = time.time()
     
@@ -77,11 +75,9 @@ def fetch_top_international_news():
                 if count >= 3: break
         except:
             continue
-
     return all_news[:8]
 
 def fetch_car_news():
-    """抓取最新汽車動態 (調整為 5 篇)"""
     google_car_url = "https://news.google.com/rss/search?q=新車+改款+上市+when:24h&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(google_car_url)
     car_news = []
@@ -91,7 +87,6 @@ def fetch_car_news():
     return car_news
 
 def ai_analyze_news(title, summary, is_car=False):
-    """使用 AI 進行翻譯與專業摘要分析"""
     base_prompt = f"""
     請以專業分析師的角度分析這則新聞：
     標題：{title}
@@ -101,24 +96,21 @@ def ai_analyze_news(title, summary, is_car=False):
     1. 將標題翻譯為專業的「繁體中文」。
     2. 撰寫 150~300 字的詳細摘要。
     """
-    
     car_special = "\n3. 特別指令：請務必掃描內文，並在摘要最後標示出是否有提及「通風座椅」等內裝配備資訊。" if is_car else ""
-    
     format_prompt = """
     請直接輸出結果，請絕對不要使用 ** 這種 Markdown 粗體語法，直接輸出以下格式並用 ||| 分隔：
     [中文標題]|||[摘要內容]
     """
-    
     final_prompt = base_prompt + car_special + format_prompt
     
     for attempt in range(3):
         try:
+            # 💎 唯一且關鍵的修正：換回最穩定普及的 gemini-1.5-flash
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-1.5-flash',
                 contents=final_prompt
             )
             result = response.text.strip()
-            
             result = result.replace('**', '') 
             
             if '|||' in result:
@@ -136,7 +128,6 @@ def ai_analyze_news(title, summary, is_car=False):
                 return title, f"摘要生成失敗 (已重試失敗)。系統除錯資訊：{error_str[:50]}..."
 
 def build_elegant_html(weather_info, intl_list, car_list, edition_name):
-    """構建排版精美的 HTML 郵件內容 (移除國內新聞板塊)"""
     date_str = datetime.datetime.now().strftime("%Y年%m月%d日")
     html = f"""
     <html>
@@ -145,18 +136,13 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
             <h1 style="color: white; margin: 0; font-size: 28px;">專屬新聞分析{edition_name}</h1>
             <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">{date_str} | 全球動態與車市追蹤</p>
         </div>
-        
         <div style="background-color: #f0f8ff; padding: 15px; margin-top: 20px; border-left: 5px solid #3498db; border-radius: 5px; font-weight: bold; color: #2c3e50;">
             {weather_info}
         </div>
-        
         <div style="padding: 20px; background-color: #ffffff; border: 1px solid #ddd; border-top: none;">
-            
             <h2 style="color: #8e44ad; border-left: 6px solid #8e44ad; padding-left: 15px; margin-top: 10px;">🚗 汽車產業動態 (Top 5)</h2>
     """
-    
     for i, item in enumerate(car_list, 1):
-        # 💎 修正：HTML 模板內不再使用 replace('\n')，直接讀取已經替換好的字串
         html += f"""
             <div style="margin-bottom: 35px; padding-bottom: 20px; border-bottom: 1px dashed #eee;">
                 <h3 style="color: #9b59b6; font-size: 20px; margin-bottom: 8px;">{i}. {item['title']}</h3>
@@ -167,13 +153,10 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
                 <div style="margin-top: 10px;"><a href="{item['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">閱讀原始報導 →</a></div>
             </div>
         """
-
     html += f"""
             <h2 style="color: #1a2a6c; border-left: 6px solid #1a2a6c; padding-left: 15px; margin-top: 50px;">🌍 全球頂尖外媒頭條 (Top 8)</h2>
     """
-    
     for i, item in enumerate(intl_list, 1):
-        # 💎 修正：同上，直接讀取 analysis
         html += f"""
             <div style="margin-bottom: 35px; padding-bottom: 20px; border-bottom: 1px dashed #eee;">
                 <h3 style="color: #c0392b; font-size: 20px; margin-bottom: 8px;">{i}. {item['title']}</h3>
@@ -184,7 +167,6 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
                 <div style="margin-top: 10px;"><a href="{item['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">閱讀原始報導 →</a></div>
             </div>
         """
-
     html += """
         </div>
         <div style="text-align: center; color: #95a5a6; font-size: 12px; padding: 20px;">
@@ -211,7 +193,6 @@ def main():
     for news in car_raw:
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
-        # 💎 修正：在生成資料的階段就把換行符號替換掉，避開 Python 語法限制
         car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
         time.sleep(20) 
         
@@ -220,7 +201,6 @@ def main():
     for news in intl_raw:
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
-        # 💎 修正：同上
         intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
         time.sleep(20) 
 
