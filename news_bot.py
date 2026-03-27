@@ -1,4 +1,4 @@
-# 版本：v25.1 (終極直連版：修正 404 錯誤，升級至最新未淘汰的 gemini-2.5-flash 模型)
+# 版本：v25.2 (完美定案版：加入「幽靈空包彈」過濾器，確保每篇都有實質內容)
 import os          
 import feedparser  
 import time
@@ -10,10 +10,8 @@ import json
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
 
-# 偽裝成瀏覽器以順利抓取 RSS
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 讀取環境變數
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
@@ -45,6 +43,17 @@ def get_custom_weather(lat, lon, loc_name, is_evening):
     except Exception as e:
         return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
+def is_valid_news(title, summary):
+    """🛡️ 幽靈空包彈過濾器：檢查是否為真實新聞"""
+    if len(summary) < 20: 
+        return False # 內容太短，通常是空包彈
+    if title.count('-') >= 1:
+        parts = title.split('-')
+        # 如果標題前後一模一樣 (例如 "AUTO ONLINE - AUTO ONLINE")，代表抓到首頁了
+        if parts[0].strip() == parts[1].strip():
+            return False
+    return True
+
 def fetch_top_international_news():
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC News"),
@@ -61,6 +70,12 @@ def fetch_top_international_news():
             feed = feedparser.parse(url)
             count = 0
             for entry in feed.entries:
+                title = entry.get('title', '')
+                summary = entry.get('summary', '')
+                
+                if not is_valid_news(title, summary):
+                    continue # 如果是空包彈，直接跳過抓下一篇
+                    
                 published_tuple = getattr(entry, 'published_parsed', None)
                 if published_tuple:
                     entry_time = timegm(published_tuple)
@@ -78,9 +93,17 @@ def fetch_car_news():
     google_car_url = "https://news.google.com/rss/search?q=新車+改款+上市+when:24h&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(google_car_url)
     car_news = []
-    for entry in feed.entries[:5]: 
+    for entry in feed.entries: 
+        title = entry.get('title', '')
+        summary = entry.get('summary', '')
+        
+        if not is_valid_news(title, summary):
+            continue # 如果是空包彈，直接跳過抓下一篇
+            
         entry.custom_source = getattr(entry, 'source', {}).get('title', '汽車媒體')
         car_news.append(entry)
+        if len(car_news) >= 5: 
+            break
     return car_news
 
 def ai_analyze_news(title, summary, is_car=False):
@@ -100,7 +123,6 @@ def ai_analyze_news(title, summary, is_car=False):
     """
     final_prompt = base_prompt + car_special + format_prompt
     
-    # 💎 終極修正：改用目前最新、未被淘汰的 gemini-2.5-flash 模型
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {"contents": [{"parts": [{"text": final_prompt}]}]}
@@ -199,7 +221,7 @@ def main():
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
         car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        # ⚠️ 維持 20 秒，對應免費版限制
+        # ⚠️ 請依據您的方案調整秒數：免費版 20，付費版可改 2
         time.sleep(20) 
         
     intl_results = []
@@ -208,7 +230,7 @@ def main():
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
         intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        # ⚠️ 維持 20 秒，對應免費版限制
+        # ⚠️ 請依據您的方案調整秒數：免費版 20，付費版可改 2
         time.sleep(20) 
 
     email_list = [e.strip() for e in RECEIVER_EMAILS_STR.split(",") if e.strip()]
