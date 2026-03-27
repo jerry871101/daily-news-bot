@@ -1,4 +1,4 @@
-# 版本：v24.1 (終極穩定版：使用 gemini-1.5-flash 解決 404 錯誤，並標示秒數修改處)
+# 版本：v25.0 (無套件直連版：開除官方 SDK，使用底層 HTTP Request 徹底解決 404 迷路問題)
 import os          
 import feedparser  
 import time
@@ -6,12 +6,11 @@ import datetime
 from calendar import timegm 
 import smtplib
 import requests    
+import json
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
-from google import genai 
-from google.genai import types 
 
-# 偽裝成瀏覽器以順利抓取 RSS (避免被網站阻擋)
+# 偽裝成瀏覽器以順利抓取 RSS
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # 讀取環境變數 (從 GitHub Secrets 取得安全金鑰)
@@ -20,11 +19,7 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "") 
 
-# 初始化 Gemini 客戶端
-client = genai.Client(api_key=API_KEY) 
-
 def get_custom_weather(lat, lon, loc_name, is_evening): 
-    """取得特定座標的天氣預報資訊"""
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
         response = requests.get(url, timeout=10)
@@ -51,7 +46,6 @@ def get_custom_weather(lat, lon, loc_name, is_evening):
         return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
 def fetch_top_international_news():
-    """精準抓取指定的五大國際外媒 (共 8 篇)"""
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC News"),
         ("http://feeds.reuters.com/reuters/worldNews", "路透社 (Reuters)"),
@@ -81,7 +75,6 @@ def fetch_top_international_news():
     return all_news[:8]
 
 def fetch_car_news():
-    """抓取最新汽車動態 (共 5 篇)"""
     google_car_url = "https://news.google.com/rss/search?q=新車+改款+上市+when:24h&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(google_car_url)
     car_news = []
@@ -91,7 +84,7 @@ def fetch_car_news():
     return car_news
 
 def ai_analyze_news(title, summary, is_car=False):
-    """呼叫 Gemini 進行翻譯與專業摘要分析"""
+    """💎 核心升級：直接使用底層 HTTP API 呼叫，徹底避開官方 SDK 的迷路問題"""
     base_prompt = f"""
     請以專業分析師的角度分析這則新聞：
     標題：{title}
@@ -108,32 +101,40 @@ def ai_analyze_news(title, summary, is_car=False):
     """
     final_prompt = base_prompt + car_special + format_prompt
     
+    # 這是 Google 最底層、最準確的 API 大門
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    payload = {"contents": [{"parts": [{"text": final_prompt}]}]}
+
     for attempt in range(3):
         try:
-            # 💎 關鍵：使用最穩定普及的 1.5-flash 模型，解決 404 錯誤
-            response = client.models.generate_content(
-                model='gemini-1.5-flash',
-                contents=final_prompt
-            )
-            result = response.text.strip()
-            result = result.replace('**', '') # 強制移除粗體星號
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            data = response.json()
+            
+            # 如果還是出錯，這次會把真正的錯誤原因抓出來
+            if response.status_code != 200:
+                error_msg = data.get('error', {}).get('message', '未知錯誤')
+                if response.status_code == 429:
+                    time.sleep(60)
+                    continue
+                else:
+                    return title, f"API 錯誤代碼 {response.status_code}：{error_msg}"
+
+            result = data['candidates'][0]['content']['parts'][0]['text'].strip()
+            result = result.replace('**', '') 
             
             if '|||' in result:
                 zh_title, analysis = result.split('|||', 1)
                 return zh_title.strip(), analysis.strip()
             return title, result
+            
         except Exception as e:
-            error_str = str(e)
             if attempt < 2:
-                if '429' in error_str:
-                    time.sleep(60)
-                else:
-                    time.sleep(15)
+                time.sleep(15)
             else:
-                return title, f"摘要生成失敗 (已重試失敗)。系統除錯資訊：{error_str[:50]}..."
+                return title, f"摘要生成失敗 (網路連線異常)。除錯資訊：{str(e)[:50]}..."
 
 def build_elegant_html(weather_info, intl_list, car_list, edition_name):
-    """將分析結果組裝成排版精美的 HTML 郵件格式"""
     date_str = datetime.datetime.now().strftime("%Y年%m月%d日")
     html = f"""
     <html>
@@ -184,7 +185,6 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
     return html
 
 def main():
-    """主程式：協調抓取、分析與寄信流程"""
     tw_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tw_tz)
     is_evening = now_tw.hour >= 12
@@ -198,23 +198,18 @@ def main():
     car_results = []
     print(f"正在分析 {len(car_raw)} 則汽車新聞...")
     for news in car_raw:
-        safe_summary = news.get('summary', '')[:2000] # 強制截斷 2000 字
+        safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
         car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        
-        # ⏳ 【頻率控制區】
-        # 免費版請維持 20 秒。若已綁定信用卡(付費版)，可改為 2 秒。
+        # ⚠️ 這裡先維持 20 秒，確保萬無一失
         time.sleep(20) 
         
     intl_results = []
     print(f"正在分析 {len(intl_raw)} 則國際新聞...")
     for news in intl_raw:
-        safe_summary = news.get('summary', '')[:2000] # 強制截斷 2000 字
+        safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
         intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        
-        # ⏳ 【頻率控制區】
-        # 免費版請維持 20 秒。若已綁定信用卡(付費版)，可改為 2 秒。
         time.sleep(20) 
 
     email_list = [e.strip() for e in RECEIVER_EMAILS_STR.split(",") if e.strip()]
