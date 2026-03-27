@@ -1,4 +1,4 @@
-# 版本：v25.0 (無套件直連版：開除官方 SDK，使用底層 HTTP Request 徹底解決 404 迷路問題)
+# 版本：v25.1 (終極直連版：修正 404 錯誤，升級至最新未淘汰的 gemini-2.5-flash 模型)
 import os          
 import feedparser  
 import time
@@ -13,7 +13,7 @@ from email.mime.multipart import MIMEMultipart
 # 偽裝成瀏覽器以順利抓取 RSS
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# 讀取環境變數 (從 GitHub Secrets 取得安全金鑰)
+# 讀取環境變數
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
@@ -84,7 +84,6 @@ def fetch_car_news():
     return car_news
 
 def ai_analyze_news(title, summary, is_car=False):
-    """💎 核心升級：直接使用底層 HTTP API 呼叫，徹底避開官方 SDK 的迷路問題"""
     base_prompt = f"""
     請以專業分析師的角度分析這則新聞：
     標題：{title}
@@ -101,8 +100,8 @@ def ai_analyze_news(title, summary, is_car=False):
     """
     final_prompt = base_prompt + car_special + format_prompt
     
-    # 這是 Google 最底層、最準確的 API 大門
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+    # 💎 終極修正：改用目前最新、未被淘汰的 gemini-2.5-flash 模型
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {"contents": [{"parts": [{"text": final_prompt}]}]}
 
@@ -111,7 +110,6 @@ def ai_analyze_news(title, summary, is_car=False):
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             data = response.json()
             
-            # 如果還是出錯，這次會把真正的錯誤原因抓出來
             if response.status_code != 200:
                 error_msg = data.get('error', {}).get('message', '未知錯誤')
                 if response.status_code == 429:
@@ -201,7 +199,7 @@ def main():
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
         car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        # ⚠️ 這裡先維持 20 秒，確保萬無一失
+        # ⚠️ 維持 20 秒，對應免費版限制
         time.sleep(20) 
         
     intl_results = []
@@ -210,6 +208,7 @@ def main():
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
         intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
+        # ⚠️ 維持 20 秒，對應免費版限制
         time.sleep(20) 
 
     email_list = [e.strip() for e in RECEIVER_EMAILS_STR.split(",") if e.strip()]
