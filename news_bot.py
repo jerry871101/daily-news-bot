@@ -1,4 +1,4 @@
-# 版本：v22.0 (客製化瘦身版：8篇國際 + 5篇汽車 + 強制消除 ** 亂碼)
+# 版本：v23.0 (語法修正版：解決 GitHub 舊版 Python f-string 反斜線報錯問題)
 import os          
 import feedparser  
 import time
@@ -78,7 +78,6 @@ def fetch_top_international_news():
         except:
             continue
 
-    # 💎 根據要求，這裡改為取前 8 則
     return all_news[:8]
 
 def fetch_car_news():
@@ -86,7 +85,6 @@ def fetch_car_news():
     google_car_url = "https://news.google.com/rss/search?q=新車+改款+上市+when:24h&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(google_car_url)
     car_news = []
-    # 💎 根據要求，這裡改為取前 5 則
     for entry in feed.entries[:5]: 
         entry.custom_source = getattr(entry, 'source', {}).get('title', '汽車媒體')
         car_news.append(entry)
@@ -121,7 +119,6 @@ def ai_analyze_news(title, summary, is_car=False):
             )
             result = response.text.strip()
             
-            # 💎 物理過濾器：強制消除所有 ** 符號
             result = result.replace('**', '') 
             
             if '|||' in result:
@@ -159,12 +156,13 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
     """
     
     for i, item in enumerate(car_list, 1):
+        # 💎 修正：HTML 模板內不再使用 replace('\n')，直接讀取已經替換好的字串
         html += f"""
             <div style="margin-bottom: 35px; padding-bottom: 20px; border-bottom: 1px dashed #eee;">
                 <h3 style="color: #9b59b6; font-size: 20px; margin-bottom: 8px;">{i}. {item['title']}</h3>
                 <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 12px;">📍 來源：{item['source']}</div>
                 <div style="background-color: #fdfaf6; padding: 18px; border-radius: 8px; border-left: 4px solid #9b59b6;">
-                    <strong>【AI 分析】</strong><br>{item['analysis'].replace('\n', '<br>')}
+                    <strong>【AI 分析】</strong><br>{item['analysis']}
                 </div>
                 <div style="margin-top: 10px;"><a href="{item['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">閱讀原始報導 →</a></div>
             </div>
@@ -175,12 +173,13 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
     """
     
     for i, item in enumerate(intl_list, 1):
+        # 💎 修正：同上，直接讀取 analysis
         html += f"""
             <div style="margin-bottom: 35px; padding-bottom: 20px; border-bottom: 1px dashed #eee;">
                 <h3 style="color: #c0392b; font-size: 20px; margin-bottom: 8px;">{i}. {item['title']}</h3>
                 <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 12px;">📍 來源：{item['source']}</div>
                 <div style="background-color: #f9f9f9; padding: 18px; border-radius: 8px; border-left: 4px solid #c0392b;">
-                    <strong>【核心摘要】</strong><br>{item['analysis'].replace('\n', '<br>')}
+                    <strong>【核心摘要】</strong><br>{item['analysis']}
                 </div>
                 <div style="margin-top: 10px;"><a href="{item['link']}" style="color: #3498db; text-decoration: none; font-size: 14px;">閱讀原始報導 →</a></div>
             </div>
@@ -204,29 +203,27 @@ def main():
     
     print(f"🚀 啟動 {edition_name} 彙整任務 (8篇國際 + 5篇汽車)...")
     
-    # 抓取新聞
     intl_raw = fetch_top_international_news()
     car_raw = fetch_car_news()
     
-    # 處理汽車新聞
     car_results = []
     print(f"正在分析 {len(car_raw)} 則汽車新聞...")
     for news in car_raw:
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
-        car_results.append({'title': zh_t, 'analysis': ana, 'source': news.custom_source, 'link': news.link})
-        time.sleep(20) # 保持 20 秒優雅節奏
+        # 💎 修正：在生成資料的階段就把換行符號替換掉，避開 Python 語法限制
+        car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
+        time.sleep(20) 
         
-    # 處理國際新聞
     intl_results = []
     print(f"正在分析 {len(intl_raw)} 則國際新聞...")
     for news in intl_raw:
         safe_summary = news.get('summary', '')[:2000]
         zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
-        intl_results.append({'title': zh_t, 'analysis': ana, 'source': news.custom_source, 'link': news.link})
+        # 💎 修正：同上
+        intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
         time.sleep(20) 
 
-    # 取得天氣並組合發送
     email_list = [e.strip() for e in RECEIVER_EMAILS_STR.split(",") if e.strip()]
     subscribers = []
     if len(email_list) >= 1: subscribers.append({"email": email_list[0], "loc": "淡水區", "lat": 25.1706, "lon": 121.4398})
