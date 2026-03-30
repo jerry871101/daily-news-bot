@@ -1,4 +1,4 @@
-# 版本：v25.2 (完美定案版：加入「幽靈空包彈」過濾器，確保每篇都有實質內容)
+# 版本：v27.0 (極致省錢版：加入 HTML 過濾器、縮減輸入字數至 800 字、精簡 AI 輸出字數)
 import os          
 import feedparser  
 import time
@@ -7,17 +7,29 @@ from calendar import timegm
 import smtplib
 import requests    
 import json
+import re # 引入正則表達式套件，用來清除 HTML 標籤
 from email.mime.text import MIMEText           
 from email.mime.multipart import MIMEMultipart 
 
+# 偽裝成瀏覽器以順利抓取 RSS
 feedparser.USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# 讀取環境變數
 API_KEY = os.getenv("GEMINI_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 RECEIVER_EMAILS_STR = os.getenv("RECEIVER_EMAIL", "") 
 
+def clean_html_tags(text):
+    """清除文字中的 HTML 標籤與多餘空白，替 API 呼叫「脫水減肥」節省 Token 成本"""
+    if not text:
+        return ""
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', text)
+    return cleantext.strip()
+
 def get_custom_weather(lat, lon, loc_name, is_evening): 
+    """取得特定座標的天氣預報資訊，區分早晚報顯示今日或明日天氣"""
     try:
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode&timezone=Asia%2FTaipei"
         response = requests.get(url, timeout=10)
@@ -44,17 +56,17 @@ def get_custom_weather(lat, lon, loc_name, is_evening):
         return f"⚠️ 暫時無法取得{loc_name}天氣資訊"
 
 def is_valid_news(title, summary):
-    """🛡️ 幽靈空包彈過濾器：檢查是否為真實新聞"""
+    """🛡️ 幽靈空包彈過濾器：檢查是否為沒有實質內容的假新聞"""
     if len(summary) < 20: 
-        return False # 內容太短，通常是空包彈
+        return False
     if title.count('-') >= 1:
         parts = title.split('-')
-        # 如果標題前後一模一樣 (例如 "AUTO ONLINE - AUTO ONLINE")，代表抓到首頁了
         if parts[0].strip() == parts[1].strip():
             return False
     return True
 
 def fetch_top_international_news():
+    """抓取五大外媒的新聞，限制在 8 篇以內"""
     rss_sources = [
         ("http://feeds.bbci.co.uk/news/rss.xml", "BBC News"),
         ("http://feeds.reuters.com/reuters/worldNews", "路透社 (Reuters)"),
@@ -71,10 +83,8 @@ def fetch_top_international_news():
             count = 0
             for entry in feed.entries:
                 title = entry.get('title', '')
-                summary = entry.get('summary', '')
-                
-                if not is_valid_news(title, summary):
-                    continue # 如果是空包彈，直接跳過抓下一篇
+                summary = clean_html_tags(entry.get('summary', '')) # 抓取時先脫水
+                if not is_valid_news(title, summary): continue
                     
                 published_tuple = getattr(entry, 'published_parsed', None)
                 if published_tuple:
@@ -82,6 +92,8 @@ def fetch_top_international_news():
                     if (current_time - entry_time) > (24 * 3600): continue 
                 
                 entry.custom_source = source_name
+                # 重新把乾淨的摘要塞回去
+                entry.summary = summary
                 all_news.append(entry)
                 count += 1
                 if count >= 3: break
@@ -90,23 +102,24 @@ def fetch_top_international_news():
     return all_news[:8]
 
 def fetch_car_news():
+    """抓取最新汽車動態，限制在 3 篇以內"""
     google_car_url = "https://news.google.com/rss/search?q=新車+改款+上市+when:24h&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     feed = feedparser.parse(google_car_url)
     car_news = []
     for entry in feed.entries: 
         title = entry.get('title', '')
-        summary = entry.get('summary', '')
-        
-        if not is_valid_news(title, summary):
-            continue # 如果是空包彈，直接跳過抓下一篇
+        summary = clean_html_tags(entry.get('summary', '')) # 抓取時先脫水
+        if not is_valid_news(title, summary): continue
             
         entry.custom_source = getattr(entry, 'source', {}).get('title', '汽車媒體')
+        entry.summary = summary
         car_news.append(entry)
-        if len(car_news) >= 5: 
+        if len(car_news) >= 3: 
             break
     return car_news
 
 def ai_analyze_news(title, summary, is_car=False):
+    """呼叫 Gemini 模型進行新聞翻譯與重點摘要"""
     base_prompt = f"""
     請以專業分析師的角度分析這則新聞：
     標題：{title}
@@ -114,11 +127,11 @@ def ai_analyze_news(title, summary, is_car=False):
 
     要求：
     1. 將標題翻譯為專業的「繁體中文」。
-    2. 撰寫 150~300 字的詳細摘要。
+    2. 撰寫 100~150 字的精煉摘要。
     """
     car_special = "\n3. 特別指令：請務必掃描內文，並在摘要最後標示出是否有提及「通風座椅」等內裝配備資訊。" if is_car else ""
     format_prompt = """
-    請直接輸出結果，請絕對不要使用 ** 這種 Markdown 粗體語法，直接輸出以下格式並用 ||| 分隔：
+    請直接輸出結果，不要使用 Markdown 粗體，輸出格式如下：
     [中文標題]|||[摘要內容]
     """
     final_prompt = base_prompt + car_special + format_prompt
@@ -131,30 +144,24 @@ def ai_analyze_news(title, summary, is_car=False):
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             data = response.json()
-            
             if response.status_code != 200:
-                error_msg = data.get('error', {}).get('message', '未知錯誤')
                 if response.status_code == 429:
                     time.sleep(60)
                     continue
-                else:
-                    return title, f"API 錯誤代碼 {response.status_code}：{error_msg}"
+                return title, f"API 錯誤：{data.get('error', {}).get('message', '未知')}"
 
             result = data['candidates'][0]['content']['parts'][0]['text'].strip()
             result = result.replace('**', '') 
-            
             if '|||' in result:
                 zh_title, analysis = result.split('|||', 1)
                 return zh_title.strip(), analysis.strip()
             return title, result
-            
         except Exception as e:
-            if attempt < 2:
-                time.sleep(15)
-            else:
-                return title, f"摘要生成失敗 (網路連線異常)。除錯資訊：{str(e)[:50]}..."
+            time.sleep(15)
+    return title, "摘要生成失敗"
 
 def build_elegant_html(weather_info, intl_list, car_list, edition_name):
+    """將天氣資訊與新聞清單組裝成排版優美的 HTML 格式信件"""
     date_str = datetime.datetime.now().strftime("%Y年%m月%d日")
     html = f"""
     <html>
@@ -167,7 +174,7 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
             {weather_info}
         </div>
         <div style="padding: 20px; background-color: #ffffff; border: 1px solid #ddd; border-top: none;">
-            <h2 style="color: #8e44ad; border-left: 6px solid #8e44ad; padding-left: 15px; margin-top: 10px;">🚗 汽車產業動態 (Top 5)</h2>
+            <h2 style="color: #8e44ad; border-left: 6px solid #8e44ad; padding-left: 15px; margin-top: 10px;">🚗 汽車產業動態 (Top 3)</h2>
     """
     for i, item in enumerate(car_list, 1):
         html += f"""
@@ -205,33 +212,30 @@ def build_elegant_html(weather_info, intl_list, car_list, edition_name):
     return html
 
 def main():
+    """主程式：負責協調新聞抓取、AI 分析與寄送 Email 的流程"""
     tw_tz = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tw_tz)
     is_evening = now_tw.hour >= 12
     edition_name = "晚報" if is_evening else "早報"
     
-    print(f"🚀 啟動 {edition_name} 彙整任務 (8篇國際 + 5篇汽車)...")
-    
     intl_raw = fetch_top_international_news()
     car_raw = fetch_car_news()
     
     car_results = []
-    print(f"正在分析 {len(car_raw)} 則汽車新聞...")
     for news in car_raw:
-        safe_summary = news.get('summary', '')[:2000]
-        zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=True)
+        # 💰 省錢關鍵：字數進一步縮減至 800 字
+        zh_t, ana = ai_analyze_news(news.title, news.summary[:800], is_car=True)
         car_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        # ⚠️ 請依據您的方案調整秒數：免費版 20，付費版可改 2
-        time.sleep(20) 
+        # 🚀 VIP 通道：享受付費版的 2 秒光速執行
+        time.sleep(2) 
         
     intl_results = []
-    print(f"正在分析 {len(intl_raw)} 則國際新聞...")
     for news in intl_raw:
-        safe_summary = news.get('summary', '')[:2000]
-        zh_t, ana = ai_analyze_news(news.title, safe_summary, is_car=False)
+        # 💰 省錢關鍵：字數進一步縮減至 800 字
+        zh_t, ana = ai_analyze_news(news.title, news.summary[:800], is_car=False)
         intl_results.append({'title': zh_t, 'analysis': ana.replace('\n', '<br>'), 'source': news.custom_source, 'link': news.link})
-        # ⚠️ 請依據您的方案調整秒數：免費版 20，付費版可改 2
-        time.sleep(20) 
+        # 🚀 VIP 通道：享受付費版的 2 秒光速執行
+        time.sleep(2) 
 
     email_list = [e.strip() for e in RECEIVER_EMAILS_STR.split(",") if e.strip()]
     subscribers = []
@@ -241,19 +245,17 @@ def main():
     for sub in subscribers:
         weather_info = get_custom_weather(sub['lat'], sub['lon'], sub['loc'], is_evening)
         final_html = build_elegant_html(weather_info, intl_results, car_results, edition_name)
-        
         msg = MIMEMultipart()
         msg['Subject'] = f"📰 專屬每日分析 - {edition_name} ({now_tw.strftime('%m/%d')})"
         msg['From'] = SENDER_EMAIL
         msg['To'] = sub['email']
         msg.attach(MIMEText(final_html, 'html', 'utf-8'))
-        
         try:
             with smtplib.SMTP('smtp.gmail.com', 587) as server:
                 server.starttls()
                 server.login(SENDER_EMAIL, APP_PASSWORD)
                 server.send_message(msg)
-                print(f"✅ 報告已成功送達：{sub['email']}")
+                print(f"✅ 成功寄送至：{sub['email']}")
         except Exception as e:
             print(f"❌ 寄送失敗：{e}")
 
